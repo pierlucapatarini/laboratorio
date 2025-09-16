@@ -124,7 +124,7 @@ function App() {
         });
       }
 
-      const VAPID_PUBLIC_KEY = "BNWTXLfrRP7MdKXRc5sczlsJdFuWpDRs5CEFnp413D3-KEGCIF5zWT_4g_pdT7RUrf4-AcugJdF4PenK620829U";
+      const VAPID_PUBLIC_KEY = process.env.REACT_APP_VAPID_PUBLIC_KEY;
       const applicationServerKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
 
       const subscription = await registration.pushManager.subscribe({

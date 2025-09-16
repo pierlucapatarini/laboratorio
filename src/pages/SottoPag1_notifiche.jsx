@@ -6,7 +6,6 @@ const SottoPag1_notifiche = () => {
   const [group, setGroup] = useState(null);
   const [error, setError] = useState(null);
 
-  // ✅ Chiave pubblica VAPID dal .env
   const VAPID_PUBLIC_KEY = process.env.REACT_APP_VAPID_PUBLIC_KEY;
 
   useEffect(() => {
@@ -24,7 +23,6 @@ const SottoPag1_notifiche = () => {
         setGroup(data);
       }
     };
-
     fetchGroup();
   }, []);
 
@@ -50,7 +48,19 @@ const SottoPag1_notifiche = () => {
     }
 
     try {
-      // 1️⃣ Richiesta permesso notifiche solo al click dell’utente
+      // Controllo chiave VAPID
+      if (!VAPID_PUBLIC_KEY) {
+        setError('Chiave pubblica VAPID mancante.');
+        return;
+      }
+
+      // Controllo supporto Service Worker e Push
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        setError('Il tuo browser non supporta le notifiche push.');
+        return;
+      }
+
+      // Richiesta permesso notifiche
       if (Notification.permission !== 'granted') {
         const permission = await Notification.requestPermission();
         if (permission !== 'granted') {
@@ -59,17 +69,25 @@ const SottoPag1_notifiche = () => {
         }
       }
 
-      // 2️⃣ Registrazione service worker
-      const registration = await navigator.serviceWorker.register('/service-worker.js');
+      // Registrazione service worker
+      const swUrl = '/service-worker.js';
+      const response = await fetch(swUrl);
+      if (!response.ok) {
+        setError('Service Worker non trovato. Verifica che /service-worker.js esista.');
+        return;
+      }
 
-      // 3️⃣ Creazione subscription push
+      const registration = await navigator.serviceWorker.register(swUrl);
+
+      // Creazione subscription push
       const subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
       });
 
-      // 4️⃣ Salvataggio subscription in Supabase
       const pushToken = JSON.stringify(subscription);
+
+      // Salvataggio in Supabase
       const { error: tokenError } = await supabase
         .from('user_devices')
         .upsert(
@@ -83,7 +101,7 @@ const SottoPag1_notifiche = () => {
         console.log('Push token salvato con successo!');
       }
 
-      // 5️⃣ Invio notifica tramite Edge Function
+      // Invio notifica tramite Edge Function
       const { data, error: fnError } = await supabase.functions.invoke('send-notification', {
         body: { message, group_id: group.id },
       });
