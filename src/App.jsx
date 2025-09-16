@@ -6,14 +6,6 @@ import Pag_auth from './pages/Pag_auth';
 import Pag0_menu from './pages/Pag0_menu';
 import SottoPag1_notifiche from './pages/SottoPag1_notifiche';
 
-// Funzione helper per convertire la chiave VAPID
-function urlBase64ToUint8Array(base64String) {
-  const padding = '='.repeat((4 - base64String.length % 4) % 4);
-  const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
-  const rawData = atob(base64);
-  return new Uint8Array([...rawData].map(char => char.charCodeAt(0)));
-}
-
 const ProtectedRoutes = ({ session }) => {
   const navigate = useNavigate();
 
@@ -38,35 +30,7 @@ const ProtectedRoutes = ({ session }) => {
 function App() {
   const [session, setSession] = useState(null);
   const [debugInfo, setDebugInfo] = useState('');
-
-  // Debug delle variabili d'ambiente all'avvi   o
-  useEffect(() => {
-    const debugEnv = () => {
-      addDebug('🔧 DEBUG AMBIENTE ALL\'AVVIO:');
-      addDebug('- Ambiente: ' + (process.env.NODE_ENV || 'sconosciuto'));
-      addDebug('- Host: ' + window.location.host);
-      addDebug('- Protocol: ' + window.location.protocol);
-      
-      // Controlla se siamo in produzione Vercel
-      if (window.location.host.includes('vercel.app')) {
-        addDebug('- Piattaforma: Vercel (produzione)');
-      } else if (window.location.host.includes('localhost')) {
-        addDebug('- Piattaforma: Locale (sviluppo)');
-      }
-      
-      // Debug variabili d'ambiente
-      if (typeof process !== 'undefined' && process.env) {
-        const allReactVars = Object.keys(process.env)
-          .filter(key => key.startsWith('REACT_APP_'))
-          .map(key => `${key}: ${process.env[key] ? 'PRESENTE' : 'VUOTA'}`);
-        addDebug('- Variabili REACT_APP: ' + (allReactVars.length > 0 ? allReactVars.join(', ') : 'NESSUNA'));
-      } else {
-        addDebug('- process.env non disponibile (normale in produzione ottimizzata)');
-      }
-    };
-    
-    debugEnv();
-  }, []);
+  const [notificationMode, setNotificationMode] = useState('push'); // 'push' o 'fallback'
 
   const addDebug = (message) => {
     console.log(message);
@@ -82,7 +46,7 @@ function App() {
     return () => authListener.subscription.unsubscribe();
   }, []);
 
-  // Registrazione del Service Worker all'avvio dell'app
+  // Service Worker con fallback
   useEffect(() => {
     const registerServiceWorker = async () => {
       if ('serviceWorker' in navigator) {
@@ -90,7 +54,6 @@ function App() {
           const registration = await navigator.serviceWorker.register('/service-worker.js');
           addDebug('✅ Service Worker registrato con successo');
           
-          // Verifica lo stato del service worker
           if (registration.installing) {
             addDebug('🔄 Service Worker in installazione...');
           } else if (registration.waiting) {
@@ -100,9 +63,12 @@ function App() {
           }
         } catch (error) {
           addDebug('❌ Errore registrazione SW: ' + error.message);
+          addDebug('🔄 Passaggio a modalità fallback...');
+          setNotificationMode('fallback');
         }
       } else {
-        addDebug('❌ Service Worker non supportato');
+        addDebug('❌ Service Worker non supportato - modalità fallback');
+        setNotificationMode('fallback');
       }
     };
 
@@ -116,7 +82,6 @@ function App() {
       try {
         addDebug('🔄 Configurazione profilo e gruppo...');
         
-        // Trova o crea il gruppo "famiglia"
         let { data: group, error: groupError } = await supabase
           .from('groups')
           .select('id')
@@ -138,7 +103,6 @@ function App() {
           addDebug('✅ Gruppo "famiglia" trovato');
         }
 
-        // Trova o crea il profilo utente
         const { data: profile } = await supabase
           .from('profiles')
           .select('*')
@@ -154,7 +118,6 @@ function App() {
           addDebug('✅ Profilo utente trovato');
         }
 
-        // Aggiungi l'utente al gruppo se non presente
         const { data: groupMember } = await supabase
           .from('group_members')
           .select('*')
@@ -178,152 +141,114 @@ function App() {
     handleProfileAndGroup();
   }, [session]);
 
-  // Funzione per sottoscrivere alle notifiche push (con debug dettagliato)
+  // Modalità Push tradizionale (con VAPID)
   const requestPushPermission = async () => {
     try {
-      addDebug('🔄 Inizio processo attivazione notifiche...');
+      addDebug('🔄 Tentativo modalità Push...');
       
       if (!session) {
         addDebug('❌ Utente non autenticato');
         return;
       }
 
-      // Controlli supporto browser
-      if (!('Notification' in window)) {
-        addDebug('❌ Browser non supporta Notification API');
-        return;
+      if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+        addDebug('❌ Browser non supporta push - passaggio a fallback');
+        setNotificationMode('fallback');
+        return requestFallbackNotifications();
       }
 
-      if (!('serviceWorker' in navigator)) {
-        addDebug('❌ Browser non supporta Service Worker');
-        return;
-      }
-
-      if (!('PushManager' in window)) {
-        addDebug('❌ Browser non supporta Push API');
-        return;
-      }
-
-      // Controllo chiave VAPID
-      const VAPID_PUBLIC_KEY = process.env.REACT_APP_VAPID_PUBLIC_KEY;
-      addDebug('🔍 Debug variabili ambiente:');
-      addDebug('- process.env disponibile: ' + (typeof process !== 'undefined' ? 'SÌ' : 'NO'));
-      addDebug('- VAPID_PUBLIC_KEY: ' + (VAPID_PUBLIC_KEY || 'NON TROVATA'));
-      
-      if (VAPID_PUBLIC_KEY) {
-        const isCorrectLength = VAPID_PUBLIC_KEY.length === 88;
-        const isValidFormat = /^[A-Za-z0-9_-]+$/.test(VAPID_PUBLIC_KEY);
-        
-        addDebug('- Lunghezza chiave: ' + VAPID_PUBLIC_KEY.length + ' ' + (isCorrectLength ? '✅' : '❌') + ' (dovrebbe essere 88)');
-        addDebug('- Formato valido: ' + (isValidFormat ? '✅ SÌ' : '❌ NO'));
-        addDebug('- Primi 20 caratteri: ' + VAPID_PUBLIC_KEY.substring(0, 20));
-        
-        // Test di conversione più dettagliato
-        try {
-          const padding = '='.repeat((4 - VAPID_PUBLIC_KEY.length % 4) % 4);
-          const base64 = (VAPID_PUBLIC_KEY + padding).replace(/\-/g, '+').replace(/_/g, '/');
-          const rawData = atob(base64);
-          const result = new Uint8Array([...rawData].map(char => char.charCodeAt(0)));
-          
-          const isCorrectByteLength = result.length === 65;
-          addDebug('- Conversione: ' + (isCorrectByteLength ? '✅' : '❌') + ' (lunghezza: ' + result.length + ', dovrebbe essere 65)');
-          
-          if (isCorrectLength && isValidFormat && isCorrectByteLength) {
-            addDebug('🎉 CHIAVE VAPID PERFETTA! Dovrebbe funzionare.');
-          }
-        } catch (convError) {
-          addDebug('❌ Errore conversione chiave: ' + convError.message);
-        }
-      }
-      
-      // Prova anche a leggere dall'window object (fallback)
-      const windowVapid = window.REACT_APP_VAPID_PUBLIC_KEY;
-      if (!VAPID_PUBLIC_KEY && windowVapid) {
-        addDebug('📋 Trovata chiave VAPID in window object');
-        VAPID_PUBLIC_KEY = windowVapid;
-      }
-      
-      if (!VAPID_PUBLIC_KEY) {
-        addDebug('❌ Chiave VAPID pubblica mancante');
-        // Debug tutte le variabili process.env se disponibili
-        if (typeof process !== 'undefined' && process.env) {
-          const reactVars = Object.keys(process.env).filter(k => k.startsWith('REACT_APP_'));
-          addDebug('- Variabili REACT_APP disponibili: ' + (reactVars.length > 0 ? reactVars.join(', ') : 'NESSUNA'));
-        }
-        return;
-      }
-
-      // Richiedi permesso per le notifiche
-      addDebug('🔄 Richiesta permesso notifiche...');
       const permission = await Notification.requestPermission();
-      addDebug('📋 Permesso ricevuto: ' + permission);
-      
       if (permission !== 'granted') {
-        addDebug('❌ Permesso per le notifiche negato');
+        addDebug('❌ Permesso notifiche negato');
         return;
       }
 
-      // Ottieni la registrazione del Service Worker
-      addDebug('🔄 Attesa Service Worker ready...');
+      // Prova SENZA VAPID (solo per test)
+      addDebug('🔄 Tentativo sottoscrizione SENZA VAPID...');
       const registration = await navigator.serviceWorker.ready;
-      addDebug('✅ Service Worker pronto');
-
-      // Controlla sottoscrizione esistente
-      addDebug('🔄 Controllo sottoscrizione esistente...');
-      let subscription = await registration.pushManager.getSubscription();
       
-      if (subscription) {
-        addDebug('✅ Sottoscrizione esistente trovata');
-      } else {
-        addDebug('🔄 Creazione nuova sottoscrizione...');
-        
-        try {
-          const applicationServerKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
-          addDebug('✅ Chiave VAPID convertita');
-          
-          subscription = await registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey
-          });
-          addDebug('✅ Sottoscrizione creata con successo');
-        } catch (subscribeError) {
-          addDebug('❌ Errore creazione sottoscrizione: ' + subscribeError.name + ' - ' + subscribeError.message);
-          
-          // Informazioni aggiuntive per debug
-          if (subscribeError.name === 'NotSupportedError') {
-            addDebug('💡 Il browser potrebbe non supportare push con questa configurazione');
-          } else if (subscribeError.name === 'NotAllowedError') {
-            addDebug('💡 L\'utente ha negato il permesso o la pagina non è sicura');
-          } else if (subscribeError.name === 'AbortError') {
-            addDebug('💡 Errore del servizio push - controlla la chiave VAPID');
-          }
-          
-          throw subscribeError;
+      try {
+        const subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true
+          // Rimuoviamo applicationServerKey per testare
+        });
+
+        const pushToken = JSON.stringify(subscription);
+        addDebug('✅ Sottoscrizione creata SENZA VAPID!');
+
+        const { error } = await supabase
+          .from('user_devices')
+          .upsert(
+            { user_id: session.user.id, push_token: pushToken, method: 'no-vapid' }, 
+            { onConflict: 'user_id' }
+          );
+
+        if (error) {
+          addDebug('❌ Errore salvataggio token: ' + error.message);
+        } else {
+          addDebug('✅ Token salvato - notifiche attivate!');
+          alert('🎉 Notifiche attivate (modalità senza VAPID)!');
         }
+      } catch (pushError) {
+        addDebug('❌ Anche senza VAPID fallisce: ' + pushError.message);
+        setNotificationMode('fallback');
+        return requestFallbackNotifications();
       }
 
-      const pushToken = JSON.stringify(subscription);
-      addDebug('✅ Token generato (lunghezza: ' + pushToken.length + ')');
+    } catch (err) {
+      addDebug('❌ ERRORE Push: ' + err.message);
+      setNotificationMode('fallback');
+      return requestFallbackNotifications();
+    }
+  };
 
-      // Salva il token nel database
-      addDebug('🔄 Salvataggio token nel database...');
+  // Modalità Fallback (notifiche browser semplici)
+  const requestFallbackNotifications = async () => {
+    try {
+      addDebug('🔄 Attivazione modalità Fallback...');
+
+      if (!('Notification' in window)) {
+        addDebug('❌ Browser non supporta nemmeno notifiche base');
+        alert('Il tuo browser non supporta le notifiche');
+        return;
+      }
+
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        addDebug('❌ Permesso notifiche negato');
+        return;
+      }
+
+      // Salva che l'utente vuole notifiche in modalità fallback
       const { error } = await supabase
         .from('user_devices')
         .upsert(
-          { user_id: session.user.id, push_token: pushToken }, 
+          { 
+            user_id: session.user.id, 
+            push_token: 'fallback-mode', 
+            method: 'fallback',
+            created_at: new Date().toISOString()
+          }, 
           { onConflict: 'user_id' }
         );
 
       if (error) {
-        addDebug('❌ Errore salvataggio token: ' + error.message);
-        throw error;
+        addDebug('❌ Errore salvataggio: ' + error.message);
       } else {
-        addDebug('✅ Token salvato nel database con successo!');
-        alert('🎉 Notifiche attivate con successo!');
+        addDebug('✅ Modalità fallback attivata!');
+        
+        // Test notifica immediata
+        new Notification('🎉 Notifiche Attivate!', {
+          body: 'Modalità fallback funzionante. Le notifiche saranno inviate tramite browser.',
+          icon: '/images/icon-192x192.png'
+        });
+        
+        alert('✅ Modalità Fallback attivata! Le notifiche funzioneranno via browser.');
       }
+
     } catch (err) {
-      addDebug('❌ ERRORE GENERALE: ' + err.name + ' - ' + err.message);
-      alert('❌ Errore nell\'attivazione delle notifiche. Controlla la console per i dettagli.');
+      addDebug('❌ ERRORE Fallback: ' + err.message);
+      alert('❌ Impossibile attivare le notifiche');
     }
   };
 
@@ -336,43 +261,35 @@ function App() {
           element={
             <>
               <ProtectedRoutes session={session} />
-              {/* Bottone per attivare notifiche */}
               {session && (
                 <div style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 1000 }}>
+                  {/* Bottone principale */}
                   <button 
-                    onClick={requestPushPermission} 
+                    onClick={notificationMode === 'push' ? requestPushPermission : requestFallbackNotifications}
                     style={{ 
                       display: 'block',
                       marginBottom: '10px',
-                      padding: '10px 15px',
-                      backgroundColor: '#007bff',
+                      padding: '12px 16px',
+                      backgroundColor: notificationMode === 'push' ? '#007bff' : '#ff6b35',
                       color: 'white',
                       border: 'none',
                       borderRadius: '5px',
-                      cursor: 'pointer'
+                      cursor: 'pointer',
+                      fontSize: '14px',
+                      fontWeight: 'bold'
                     }}
                   >
-                    Attiva Notifiche
+                    {notificationMode === 'push' ? '🚀 Attiva Push' : '🔔 Attiva Fallback'}
                   </button>
                   
-                  {/* Bottone per mostrare debug */}
+                  {/* Bottone per cambiare modalità */}
                   <button 
-                    onClick={() => {
-                      const debugWindow = window.open('', '_blank', 'width=600,height=400');
-                      debugWindow.document.write(`
-                        <html>
-                          <head><title>Debug Info</title></head>
-                          <body>
-                            <h2>Debug Notifiche Push</h2>
-                            <pre style="font-family: monospace; font-size: 12px; background: #f5f5f5; padding: 10px; border: 1px solid #ddd;">${debugInfo}</pre>
-                          </body>
-                        </html>
-                      `);
-                    }}
+                    onClick={() => setNotificationMode(notificationMode === 'push' ? 'fallback' : 'push')}
                     style={{ 
                       display: 'block',
-                      padding: '5px 10px',
-                      backgroundColor: '#28a745',
+                      marginBottom: '5px',
+                      padding: '8px 12px',
+                      backgroundColor: '#6c757d',
                       color: 'white',
                       border: 'none',
                       borderRadius: '3px',
@@ -380,7 +297,36 @@ function App() {
                       fontSize: '12px'
                     }}
                   >
-                    Debug Info
+                    Cambia → {notificationMode === 'push' ? 'Fallback' : 'Push'}
+                  </button>
+                  
+                  {/* Debug Info */}
+                  <button 
+                    onClick={() => {
+                      const debugWindow = window.open('', '_blank', 'width=600,height=400,scrollbars=yes');
+                      debugWindow.document.write(`
+                        <html>
+                          <head><title>Debug Notifiche</title></head>
+                          <body style="font-family: monospace; font-size: 12px; padding: 10px;">
+                            <h3>🔧 Debug Log</h3>
+                            <p><strong>Modalità attuale:</strong> ${notificationMode}</p>
+                            <pre style="background: #f5f5f5; padding: 10px; border: 1px solid #ddd; white-space: pre-wrap;">${debugInfo}</pre>
+                          </body>
+                        </html>
+                      `);
+                    }}
+                    style={{ 
+                      display: 'block',
+                      padding: '5px 8px',
+                      backgroundColor: '#28a745',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '3px',
+                      cursor: 'pointer',
+                      fontSize: '11px'
+                    }}
+                  >
+                    Debug
                   </button>
                 </div>
               )}
