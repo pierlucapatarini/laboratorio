@@ -39,35 +39,6 @@ function App() {
   const [session, setSession] = useState(null);
   const [debugInfo, setDebugInfo] = useState('');
 
-  // Debug delle variabili d'ambiente all'avvio
-  useEffect(() => {
-    const debugEnv = () => {
-      addDebug('🔧 DEBUG AMBIENTE ALL\'AVVIO:');
-      addDebug('- Ambiente: ' + (process.env.NODE_ENV || 'sconosciuto'));
-      addDebug('- Host: ' + window.location.host);
-      addDebug('- Protocol: ' + window.location.protocol);
-      
-      // Controlla se siamo in produzione Vercel
-      if (window.location.host.includes('vercel.app')) {
-        addDebug('- Piattaforma: Vercel (produzione)');
-      } else if (window.location.host.includes('localhost')) {
-        addDebug('- Piattaforma: Locale (sviluppo)');
-      }
-      
-      // Debug variabili d'ambiente
-      if (typeof process !== 'undefined' && process.env) {
-        const allReactVars = Object.keys(process.env)
-          .filter(key => key.startsWith('REACT_APP_'))
-          .map(key => `${key}: ${process.env[key] ? 'PRESENTE' : 'VUOTA'}`);
-        addDebug('- Variabili REACT_APP: ' + (allReactVars.length > 0 ? allReactVars.join(', ') : 'NESSUNA'));
-      } else {
-        addDebug('- process.env non disponibile (normale in produzione ottimizzata)');
-      }
-    };
-    
-    debugEnv();
-  }, []);
-
   const addDebug = (message) => {
     console.log(message);
     setDebugInfo(prev => prev + '\n' + new Date().toLocaleTimeString() + ': ' + message);
@@ -206,32 +177,12 @@ function App() {
 
       // Controllo chiave VAPID
       const VAPID_PUBLIC_KEY = process.env.REACT_APP_VAPID_PUBLIC_KEY;
-      addDebug('🔍 Debug variabili ambiente:');
-      addDebug('- process.env disponibile: ' + (typeof process !== 'undefined' ? 'SÌ' : 'NO'));
-      addDebug('- VAPID_PUBLIC_KEY: ' + (VAPID_PUBLIC_KEY || 'NON TROVATA'));
-      
-      if (VAPID_PUBLIC_KEY) {
-        addDebug('- Lunghezza chiave: ' + VAPID_PUBLIC_KEY.length + ' (dovrebbe essere 88)');
-        addDebug('- Formato valido: ' + (/^[A-Za-z0-9_-]+$/.test(VAPID_PUBLIC_KEY) ? 'SÌ' : 'NO'));
-        addDebug('- Primi 20 caratteri: ' + VAPID_PUBLIC_KEY.substring(0, 20));
-      }
-      
-      // Prova anche a leggere dall'window object (fallback)
-      const windowVapid = window.REACT_APP_VAPID_PUBLIC_KEY;
-      if (!VAPID_PUBLIC_KEY && windowVapid) {
-        addDebug('📋 Trovata chiave VAPID in window object');
-        VAPID_PUBLIC_KEY = windowVapid;
-      }
-      
       if (!VAPID_PUBLIC_KEY) {
         addDebug('❌ Chiave VAPID pubblica mancante');
-        // Debug tutte le variabili process.env se disponibili
-        if (typeof process !== 'undefined' && process.env) {
-          const reactVars = Object.keys(process.env).filter(k => k.startsWith('REACT_APP_'));
-          addDebug('- Variabili REACT_APP disponibili: ' + (reactVars.length > 0 ? reactVars.join(', ') : 'NESSUNA'));
-        }
+        addDebug('Variabili disponibili: ' + Object.keys(process.env).filter(k => k.startsWith('REACT_APP_')).join(', '));
         return;
       }
+      addDebug('✅ Chiave VAPID trovata: ' + VAPID_PUBLIC_KEY.substring(0, 10) + '...');
 
       // Richiedi permesso per le notifiche
       addDebug('🔄 Richiesta permesso notifiche...');
