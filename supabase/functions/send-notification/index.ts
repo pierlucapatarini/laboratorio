@@ -4,88 +4,79 @@ import webpush from "https://esm.sh/web-push@3.6.6";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey',
   'Access-Control-Allow-Methods': 'POST, OPTIONS'
 };
 
 serve(async (req) => {
-  // 1️⃣ Gestione preflight CORS
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { status: 200, headers: corsHeaders });
+  // Gestione CORS
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders, status: 200 });
   }
 
-  // 2️⃣ Controllo metodo POST
-  if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method Not Allowed' }), {
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Method Not Allowed" }), {
       status: 405,
-      headers: { ...corsHeaders, "Content-Type": "application/json" }
+      headers: { "Content-Type": "application/json" },
     });
   }
 
   try {
     const { message, group_id } = await req.json();
 
-    // 3️⃣ Creazione client Supabase con Service Role
     const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // 4️⃣ Recupero token dei dispositivi del gruppo
     const { data: userDevices, error: devicesError } = await supabase
-      .from('user_devices')
-      .select('push_token')
+      .from("user_devices")
+      .select("push_token")
       .in(
-        'user_id',
-        supabase.from('group_members').select('user_id').eq('group_id', group_id)
+        "user_id",
+        supabase.from("group_members").select("user_id").eq("group_id", group_id)
       );
 
-    if (devicesError) {
-      return new Response(JSON.stringify({ error: devicesError.message }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
-      });
-    }
+    if (devicesError) throw devicesError;
 
     if (!userDevices || userDevices.length === 0) {
-      return new Response(JSON.stringify({ message: 'Nessun dispositivo trovato per questo gruppo.' }), {
+      return new Response(JSON.stringify({ message: "Nessun dispositivo trovato." }), {
         status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json", ...corsHeaders },
       });
     }
 
-    // 5️⃣ Chiavi VAPID dai secrets
     const vapidKeys = {
-      publicKey: Deno.env.get('VAPID_PUBLIC_KEY')!,
-      privateKey: Deno.env.get('VAPID_PRIVATE_KEY')!
+      publicKey: Deno.env.get("VAPID_PUBLIC_KEY")!,
+      privateKey: Deno.env.get("VAPID_PRIVATE_KEY")!,
     };
 
     const payload = JSON.stringify({
       title: "Nuova Notifica di Gruppo",
       body: message,
-      url: "/" // URL da aprire quando si clicca la notifica
+      url: "/", // URL da aprire quando si clicca la notifica
     });
 
-    // 6️⃣ Invio notifiche push
-    const pushPromises = userDevices.map(async (device) => {
-      try {
-        const subscription = JSON.parse(device.push_token);
-        await webpush.sendNotification(subscription, payload, { vapidKeys });
-      } catch (pushError) {
-        console.error('Errore nell\'invio della notifica:', pushError);
-      }
-    });
-
-    await Promise.allSettled(pushPromises);
+    await Promise.all(
+      userDevices.map(async (device) => {
+        try {
+          const subscription = JSON.parse(device.push_token);
+          await webpush.sendNotification(subscription, payload, { vapidKeys });
+        } catch (pushError) {
+          console.error("Errore invio notifica:", pushError);
+        }
+      })
+    );
 
     return new Response(JSON.stringify({ success: true }), {
       status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" }
+      headers: { "Content-Type": "application/json", ...corsHeaders },
     });
   } catch (err) {
+    console.error(err);
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" }
+      headers: { "Content-Type": "application/json", ...corsHeaders },
     });
   }
 });
