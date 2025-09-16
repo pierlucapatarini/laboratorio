@@ -4,14 +4,14 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.4";
 import webpush from "https://esm.sh/web-push@3.6.6";
 
 const corsHeaders = {
-    'Access-Control-Allow-Origin': '*', // Sostituisci con il tuo dominio di produzione
+    'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey',
 };
 
 serve(async (req) => {
     // Gestisce le richieste OPTIONS per CORS
     if (req.method === 'OPTIONS') {
-        return new Response('ok', { headers: corsHeaders });
+        return new Response('ok', { headers: corsHeaders, status: 200 });
     }
 
     // Gestione dell'errore se il metodo non è POST
@@ -44,7 +44,7 @@ serve(async (req) => {
                 headers: { "Content-Type": "application/json" },
             });
         }
-        
+
         // Verifica se ci sono token da inviare
         if (!userDevices || userDevices.length === 0) {
             return new Response(JSON.stringify({ message: "Nessun dispositivo trovato per questo gruppo." }), {
