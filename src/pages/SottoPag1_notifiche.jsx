@@ -5,10 +5,11 @@ const SottoPag1_notifiche = () => {
   const [message, setMessage] = useState('');
   const [group, setGroup] = useState(null);
   const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
 
-  // 1️⃣ Recupera il gruppo "famiglia"
+  const VAPID_PUBLIC_KEY = process.env.REACT_APP_VAPID_PUBLIC_KEY;
+
   useEffect(() => {
+    // Carica il gruppo "famiglia"
     const fetchGroup = async () => {
       const { data, error } = await supabase
         .from('groups')
@@ -27,59 +28,13 @@ const SottoPag1_notifiche = () => {
     fetchGroup();
   }, []);
 
-  // 2️⃣ Registrazione push token
-  useEffect(() => {
-    const registerPush = async () => {
-      if (!group) return;
+  const urlBase64ToUint8Array = (base64String) => {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+    const rawData = atob(base64);
+    return new Uint8Array([...rawData].map((c) => c.charCodeAt(0)));
+  };
 
-      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-        console.warn('Push notifications non supportate in questo browser.');
-        return;
-      }
-
-      try {
-        const permission = await Notification.requestPermission();
-        if (permission !== 'granted') {
-          console.warn('Permesso per le notifiche negato.');
-          return;
-        }
-
-        const registration = await navigator.serviceWorker.register('/service-worker.js');
-
-        const VAPID_PUBLIC_KEY = import.meta.env.REACT_APP_VAPID_PUBLIC_KEY;
-
-        function urlBase64ToUint8Array(base64String) {
-          const padding = '='.repeat((4 - base64String.length % 4) % 4);
-          const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
-          const rawData = atob(base64);
-          return new Uint8Array([...rawData].map(c => c.charCodeAt(0)));
-        }
-
-        const subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
-        });
-
-        const pushToken = JSON.stringify(subscription);
-
-        const { error } = await supabase
-          .from('user_devices')
-          .upsert({ user_id: supabase.auth.getUser().data.user.id, push_token: pushToken }, { onConflict: ['push_token'] });
-
-        if (error) {
-          console.error('Errore nel salvare il push token:', error);
-        } else {
-          console.log('Push token salvato con successo!');
-        }
-      } catch (err) {
-        console.error('Errore nella registrazione alle notifiche push:', err);
-      }
-    };
-
-    registerPush();
-  }, [group]);
-
-  // 3️⃣ Invio della notifica tramite Edge Function
   const handleSendNotification = async (e) => {
     e.preventDefault();
     setError(null);
@@ -94,37 +49,55 @@ const SottoPag1_notifiche = () => {
       return;
     }
 
-    setLoading(true);
-
     try {
-      const response = await fetch(
-        'https://upqfjtqubuzutnkplbde.supabase.co/functions/v1/send-notification',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            apikey: import.meta.env.VITE_SUPABASE_ANON_KEY
-          },
-          body: JSON.stringify({
-            message,
-            group_id: group.id
-          })
+      // 1️⃣ Richiesta permesso notifiche solo al click dell'utente
+      if (Notification.permission !== 'granted') {
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+          setError('Permesso per le notifiche negato.');
+          return;
         }
-      );
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Errore HTTP ${response.status}: ${text}`);
       }
 
-      const data = await response.json();
-      console.log('Notifica inviata con successo!', data);
-      setMessage('');
+      // 2️⃣ Registrazione service worker
+      const registration = await navigator.serviceWorker.register('/service-worker.js');
+
+      // 3️⃣ Creazione subscription push
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+
+      // 4️⃣ Salvataggio subscription in Supabase
+      const pushToken = JSON.stringify(subscription);
+      const { error: tokenError } = await supabase
+        .from('user_devices')
+        .upsert(
+          { user_id: supabase.auth.getUser().data.user.id, push_token: pushToken },
+          { onConflict: ['push_token'] }
+        );
+
+      if (tokenError) {
+        console.error('Errore nel salvare il push token:', tokenError);
+      } else {
+        console.log('Push token salvato con successo!');
+      }
+
+      // 5️⃣ Invio notifica tramite Edge Function
+      const { data, error: fnError } = await supabase.functions.invoke('send-notification', {
+        body: { message, group_id: group.id },
+      });
+
+      if (fnError) {
+        console.error('Errore nell\'invio della notifica:', fnError);
+        setError('Errore nell\'invio della notifica. Controlla il log della funzione.');
+      } else {
+        console.log('Notifica inviata con successo!', data);
+        setMessage('');
+      }
     } catch (err) {
-      console.error('Errore nell\'invio della notifica:', err);
+      console.error('Errore nella registrazione alle notifiche push:', err);
       setError('Si è verificato un errore. Controlla la console.');
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -149,10 +122,9 @@ const SottoPag1_notifiche = () => {
         <div className="flex items-center justify-between">
           <button
             type="submit"
-            disabled={loading}
-            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline disabled:opacity-50"
+            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
           >
-            {loading ? 'Invio...' : 'Invia Notifica'}
+            Invia Notifica
           </button>
         </div>
       </form>
