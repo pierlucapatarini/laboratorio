@@ -39,7 +39,7 @@ function App() {
   const [session, setSession] = useState(null);
   const [debugInfo, setDebugInfo] = useState('');
 
-  // Debug delle variabili d'ambiente all'avvio
+  // Debug delle variabili d'ambiente all'avvi   o
   useEffect(() => {
     const debugEnv = () => {
       addDebug('🔧 DEBUG AMBIENTE ALL\'AVVIO:');
