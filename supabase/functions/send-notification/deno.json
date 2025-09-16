@@ -1,0 +1,8 @@
+{
+  "imports": {
+    "webpush": "https://esm.sh/web-push@3.6.6"
+  },
+  "compilerOptions": {
+    "lib": ["deno.ns", "dom"]
+  }
+}
