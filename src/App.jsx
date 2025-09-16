@@ -211,9 +211,29 @@ function App() {
       addDebug('- VAPID_PUBLIC_KEY: ' + (VAPID_PUBLIC_KEY || 'NON TROVATA'));
       
       if (VAPID_PUBLIC_KEY) {
-        addDebug('- Lunghezza chiave: ' + VAPID_PUBLIC_KEY.length + ' (dovrebbe essere 88)');
-        addDebug('- Formato valido: ' + (/^[A-Za-z0-9_-]+$/.test(VAPID_PUBLIC_KEY) ? 'SÌ' : 'NO'));
+        const isCorrectLength = VAPID_PUBLIC_KEY.length === 88;
+        const isValidFormat = /^[A-Za-z0-9_-]+$/.test(VAPID_PUBLIC_KEY);
+        
+        addDebug('- Lunghezza chiave: ' + VAPID_PUBLIC_KEY.length + ' ' + (isCorrectLength ? '✅' : '❌') + ' (dovrebbe essere 88)');
+        addDebug('- Formato valido: ' + (isValidFormat ? '✅ SÌ' : '❌ NO'));
         addDebug('- Primi 20 caratteri: ' + VAPID_PUBLIC_KEY.substring(0, 20));
+        
+        // Test di conversione più dettagliato
+        try {
+          const padding = '='.repeat((4 - VAPID_PUBLIC_KEY.length % 4) % 4);
+          const base64 = (VAPID_PUBLIC_KEY + padding).replace(/\-/g, '+').replace(/_/g, '/');
+          const rawData = atob(base64);
+          const result = new Uint8Array([...rawData].map(char => char.charCodeAt(0)));
+          
+          const isCorrectByteLength = result.length === 65;
+          addDebug('- Conversione: ' + (isCorrectByteLength ? '✅' : '❌') + ' (lunghezza: ' + result.length + ', dovrebbe essere 65)');
+          
+          if (isCorrectLength && isValidFormat && isCorrectByteLength) {
+            addDebug('🎉 CHIAVE VAPID PERFETTA! Dovrebbe funzionare.');
+          }
+        } catch (convError) {
+          addDebug('❌ Errore conversione chiave: ' + convError.message);
+        }
       }
       
       // Prova anche a leggere dall'window object (fallback)
