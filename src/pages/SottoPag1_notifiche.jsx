@@ -6,10 +6,10 @@ const SottoPag1_notifiche = () => {
   const [group, setGroup] = useState(null);
   const [error, setError] = useState(null);
 
+  // ✅ Chiave pubblica VAPID dal .env
   const VAPID_PUBLIC_KEY = process.env.REACT_APP_VAPID_PUBLIC_KEY;
 
   useEffect(() => {
-    // Carica il gruppo "famiglia"
     const fetchGroup = async () => {
       const { data, error } = await supabase
         .from('groups')
@@ -50,7 +50,7 @@ const SottoPag1_notifiche = () => {
     }
 
     try {
-      // 1️⃣ Richiesta permesso notifiche solo al click dell'utente
+      // 1️⃣ Richiesta permesso notifiche solo al click dell’utente
       if (Notification.permission !== 'granted') {
         const permission = await Notification.requestPermission();
         if (permission !== 'granted') {
