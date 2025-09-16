@@ -37,6 +37,12 @@ const ProtectedRoutes = ({ session }) => {
 
 function App() {
   const [session, setSession] = useState(null);
+  const [debugInfo, setDebugInfo] = useState('');
+
+  const addDebug = (message) => {
+    console.log(message);
+    setDebugInfo(prev => prev + '\n' + new Date().toLocaleTimeString() + ': ' + message);
+  };
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
@@ -53,10 +59,21 @@ function App() {
       if ('serviceWorker' in navigator) {
         try {
           const registration = await navigator.serviceWorker.register('/service-worker.js');
-          console.log('Service Worker registrato con successo:', registration);
+          addDebug('✅ Service Worker registrato con successo');
+          
+          // Verifica lo stato del service worker
+          if (registration.installing) {
+            addDebug('🔄 Service Worker in installazione...');
+          } else if (registration.waiting) {
+            addDebug('⏳ Service Worker in attesa...');
+          } else if (registration.active) {
+            addDebug('✅ Service Worker attivo');
+          }
         } catch (error) {
-          console.error('Errore nella registrazione del Service Worker:', error);
+          addDebug('❌ Errore registrazione SW: ' + error.message);
         }
+      } else {
+        addDebug('❌ Service Worker non supportato');
       }
     };
 
@@ -68,6 +85,8 @@ function App() {
       if (!session) return;
 
       try {
+        addDebug('🔄 Configurazione profilo e gruppo...');
+        
         // Trova o crea il gruppo "famiglia"
         let { data: group, error: groupError } = await supabase
           .from('groups')
@@ -82,9 +101,12 @@ function App() {
             .select()
             .single();
           group = data;
+          addDebug('✅ Gruppo "famiglia" creato');
         } else if (groupError) {
-          console.error('Errore nel trovare il gruppo:', groupError);
+          addDebug('❌ Errore gruppo: ' + groupError.message);
           return;
+        } else {
+          addDebug('✅ Gruppo "famiglia" trovato');
         }
 
         // Trova o crea il profilo utente
@@ -98,6 +120,9 @@ function App() {
           await supabase
             .from('profiles')
             .upsert({ id: session.user.id, username: session.user.email });
+          addDebug('✅ Profilo utente creato');
+        } else {
+          addDebug('✅ Profilo utente trovato');
         }
 
         // Aggiungi l'utente al gruppo se non presente
@@ -112,59 +137,107 @@ function App() {
           await supabase
             .from('group_members')
             .upsert({ group_id: group.id, user_id: session.user.id });
+          addDebug('✅ Utente aggiunto al gruppo');
+        } else {
+          addDebug('✅ Utente già nel gruppo');
         }
       } catch (error) {
-        console.error('Errore nella gestione di profilo e gruppo:', error);
+        addDebug('❌ Errore setup: ' + error.message);
       }
     };
 
     handleProfileAndGroup();
   }, [session]);
 
-  // Funzione per sottoscrivere alle notifiche push
+  // Funzione per sottoscrivere alle notifiche push (con debug dettagliato)
   const requestPushPermission = async () => {
-    if (!session) {
-      console.warn('Utente non autenticato');
-      return;
-    }
-
-    if (!('Notification' in window) || !('serviceWorker' in navigator)) {
-      console.warn('Browser non supporta le notifiche push');
-      return;
-    }
-
     try {
-      // Richiedi permesso per le notifiche
-      const permission = await Notification.requestPermission();
-      if (permission !== 'granted') {
-        console.warn('Permesso per le notifiche negato.');
+      addDebug('🔄 Inizio processo attivazione notifiche...');
+      
+      if (!session) {
+        addDebug('❌ Utente non autenticato');
         return;
       }
 
-      // Ottieni la registrazione del Service Worker esistente
-      const registration = await navigator.serviceWorker.ready;
-      
+      // Controlli supporto browser
+      if (!('Notification' in window)) {
+        addDebug('❌ Browser non supporta Notification API');
+        return;
+      }
+
+      if (!('serviceWorker' in navigator)) {
+        addDebug('❌ Browser non supporta Service Worker');
+        return;
+      }
+
+      if (!('PushManager' in window)) {
+        addDebug('❌ Browser non supporta Push API');
+        return;
+      }
+
+      // Controllo chiave VAPID
       const VAPID_PUBLIC_KEY = process.env.REACT_APP_VAPID_PUBLIC_KEY;
       if (!VAPID_PUBLIC_KEY) {
-        console.error('Chiave VAPID pubblica mancante');
+        addDebug('❌ Chiave VAPID pubblica mancante');
+        addDebug('Variabili disponibili: ' + Object.keys(process.env).filter(k => k.startsWith('REACT_APP_')).join(', '));
+        return;
+      }
+      addDebug('✅ Chiave VAPID trovata: ' + VAPID_PUBLIC_KEY.substring(0, 10) + '...');
+
+      // Richiedi permesso per le notifiche
+      addDebug('🔄 Richiesta permesso notifiche...');
+      const permission = await Notification.requestPermission();
+      addDebug('📋 Permesso ricevuto: ' + permission);
+      
+      if (permission !== 'granted') {
+        addDebug('❌ Permesso per le notifiche negato');
         return;
       }
 
-      const applicationServerKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
+      // Ottieni la registrazione del Service Worker
+      addDebug('🔄 Attesa Service Worker ready...');
+      const registration = await navigator.serviceWorker.ready;
+      addDebug('✅ Service Worker pronto');
 
-      // Controlla se esiste già una sottoscrizione
+      // Controlla sottoscrizione esistente
+      addDebug('🔄 Controllo sottoscrizione esistente...');
       let subscription = await registration.pushManager.getSubscription();
       
-      if (!subscription) {
-        subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey
-        });
+      if (subscription) {
+        addDebug('✅ Sottoscrizione esistente trovata');
+      } else {
+        addDebug('🔄 Creazione nuova sottoscrizione...');
+        
+        try {
+          const applicationServerKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
+          addDebug('✅ Chiave VAPID convertita');
+          
+          subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey
+          });
+          addDebug('✅ Sottoscrizione creata con successo');
+        } catch (subscribeError) {
+          addDebug('❌ Errore creazione sottoscrizione: ' + subscribeError.name + ' - ' + subscribeError.message);
+          
+          // Informazioni aggiuntive per debug
+          if (subscribeError.name === 'NotSupportedError') {
+            addDebug('💡 Il browser potrebbe non supportare push con questa configurazione');
+          } else if (subscribeError.name === 'NotAllowedError') {
+            addDebug('💡 L\'utente ha negato il permesso o la pagina non è sicura');
+          } else if (subscribeError.name === 'AbortError') {
+            addDebug('💡 Errore del servizio push - controlla la chiave VAPID');
+          }
+          
+          throw subscribeError;
+        }
       }
 
       const pushToken = JSON.stringify(subscription);
+      addDebug('✅ Token generato (lunghezza: ' + pushToken.length + ')');
 
       // Salva il token nel database
+      addDebug('🔄 Salvataggio token nel database...');
       const { error } = await supabase
         .from('user_devices')
         .upsert(
@@ -173,14 +246,15 @@ function App() {
         );
 
       if (error) {
-        console.error('Errore nel salvare il push token:', error);
+        addDebug('❌ Errore salvataggio token: ' + error.message);
+        throw error;
       } else {
-        console.log('Push token salvato con successo!');
-        alert('Notifiche attivate con successo!');
+        addDebug('✅ Token salvato nel database con successo!');
+        alert('🎉 Notifiche attivate con successo!');
       }
     } catch (err) {
-      console.error('Errore nella registrazione o sottoscrizione alle notifiche push:', err);
-      alert('Errore nell\'attivazione delle notifiche: ' + err.message);
+      addDebug('❌ ERRORE GENERALE: ' + err.name + ' - ' + err.message);
+      alert('❌ Errore nell\'attivazione delle notifiche. Controlla la console per i dettagli.');
     }
   };
 
@@ -195,22 +269,51 @@ function App() {
               <ProtectedRoutes session={session} />
               {/* Bottone per attivare notifiche */}
               {session && (
-                <button 
-                  onClick={requestPushPermission} 
-                  style={{ 
-                    position: 'fixed', 
-                    bottom: 20, 
-                    right: 20,
-                    padding: '10px 15px',
-                    backgroundColor: '#007bff',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '5px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Attiva Notifiche
-                </button>
+                <div style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 1000 }}>
+                  <button 
+                    onClick={requestPushPermission} 
+                    style={{ 
+                      display: 'block',
+                      marginBottom: '10px',
+                      padding: '10px 15px',
+                      backgroundColor: '#007bff',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '5px',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Attiva Notifiche
+                  </button>
+                  
+                  {/* Bottone per mostrare debug */}
+                  <button 
+                    onClick={() => {
+                      const debugWindow = window.open('', '_blank', 'width=600,height=400');
+                      debugWindow.document.write(`
+                        <html>
+                          <head><title>Debug Info</title></head>
+                          <body>
+                            <h2>Debug Notifiche Push</h2>
+                            <pre style="font-family: monospace; font-size: 12px; background: #f5f5f5; padding: 10px; border: 1px solid #ddd;">${debugInfo}</pre>
+                          </body>
+                        </html>
+                      `);
+                    }}
+                    style={{ 
+                      display: 'block',
+                      padding: '5px 10px',
+                      backgroundColor: '#28a745',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '3px',
+                      cursor: 'pointer',
+                      fontSize: '12px'
+                    }}
+                  >
+                    Debug Info
+                  </button>
+                </div>
               )}
             </>
           }
