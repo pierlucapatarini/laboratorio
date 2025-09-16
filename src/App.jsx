@@ -10,7 +10,7 @@ import SottoPag1_notifiche from './pages/SottoPag1_notifiche';
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
   const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
-  const rawData = atob(base64);
+  const rawData = atob(base64String);
   return new Uint8Array([...rawData].map(char => char.charCodeAt(0)));
 }
 
@@ -21,7 +21,6 @@ const ProtectedRoutes = ({ session }) => {
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       if (!newSession) navigate('/auth');
     });
-
     return () => authListener.subscription.unsubscribe();
   }, [navigate]);
 
@@ -45,7 +44,6 @@ function App() {
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
     });
-
     return () => authListener.subscription.unsubscribe();
   }, []);
 
@@ -98,19 +96,21 @@ function App() {
           .from('group_members')
           .upsert({ group_id: group.id, user_id: session.user.id });
       }
-
-      // Richiedi il permesso e salva il token push
-      await requestPushPermission(session);
     };
 
     handleProfileAndGroup();
   }, [session]);
 
-  const requestPushPermission = async (session) => {
+  // Funzione per registrare SW e sottoscrivere push
+  const requestPushPermission = async () => {
+    if (!session) return;
     if (!('Notification' in window) || !('serviceWorker' in navigator)) return;
 
     const permission = await Notification.requestPermission();
-    if (permission !== 'granted') return;
+    if (permission !== 'granted') {
+      console.warn('Permesso per le notifiche negato.');
+      return;
+    }
 
     try {
       const registration = await navigator.serviceWorker.register('/service-worker.js');
@@ -149,7 +149,20 @@ function App() {
     <Router>
       <Routes>
         <Route path="/auth" element={<Pag_auth />} />
-        <Route path="/*" element={<ProtectedRoutes session={session} />} />
+        <Route
+          path="/*"
+          element={
+            <>
+              <ProtectedRoutes session={session} />
+              {/* Bottone per attivare notifiche */}
+              {session && (
+                <button onClick={requestPushPermission} style={{ position: 'fixed', bottom: 20, right: 20 }}>
+                  Attiva Notifiche
+                </button>
+              )}
+            </>
+          }
+        />
       </Routes>
     </Router>
   );
