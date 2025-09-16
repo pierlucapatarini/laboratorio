@@ -10,7 +10,7 @@ import SottoPag1_notifiche from './pages/SottoPag1_notifiche';
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
   const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
-  const rawData = atob(base64String);
+  const rawData = atob(base64);
   return new Uint8Array([...rawData].map(char => char.charCodeAt(0)));
 }
 
@@ -47,101 +47,140 @@ function App() {
     return () => authListener.subscription.unsubscribe();
   }, []);
 
+  // Registrazione del Service Worker all'avvio dell'app
+  useEffect(() => {
+    const registerServiceWorker = async () => {
+      if ('serviceWorker' in navigator) {
+        try {
+          const registration = await navigator.serviceWorker.register('/service-worker.js');
+          console.log('Service Worker registrato con successo:', registration);
+        } catch (error) {
+          console.error('Errore nella registrazione del Service Worker:', error);
+        }
+      }
+    };
+
+    registerServiceWorker();
+  }, []);
+
   useEffect(() => {
     const handleProfileAndGroup = async () => {
       if (!session) return;
 
-      // Trova o crea il gruppo "famiglia"
-      let { data: group, error: groupError } = await supabase
-        .from('groups')
-        .select('id')
-        .eq('name', 'famiglia')
-        .single();
-
-      if (groupError && groupError.code === 'PGRST116') {
-        const { data } = await supabase
+      try {
+        // Trova o crea il gruppo "famiglia"
+        let { data: group, error: groupError } = await supabase
           .from('groups')
-          .insert({ name: 'famiglia' })
-          .select()
+          .select('id')
+          .eq('name', 'famiglia')
           .single();
-        group = data;
-      } else if (groupError) {
-        console.error('Errore nel trovare il gruppo:', groupError);
-        return;
-      }
 
-      // Trova o crea il profilo utente
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', session.user.id)
-        .single();
+        if (groupError && groupError.code === 'PGRST116') {
+          const { data } = await supabase
+            .from('groups')
+            .insert({ name: 'famiglia' })
+            .select()
+            .single();
+          group = data;
+        } else if (groupError) {
+          console.error('Errore nel trovare il gruppo:', groupError);
+          return;
+        }
 
-      if (!profile) {
-        await supabase
+        // Trova o crea il profilo utente
+        const { data: profile } = await supabase
           .from('profiles')
-          .upsert({ id: session.user.id, username: session.user.email });
-      }
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
 
-      // Aggiungi l’utente al gruppo se non presente
-      const { data: groupMember } = await supabase
-        .from('group_members')
-        .select('*')
-        .eq('user_id', session.user.id)
-        .eq('group_id', group.id)
-        .single();
+        if (!profile) {
+          await supabase
+            .from('profiles')
+            .upsert({ id: session.user.id, username: session.user.email });
+        }
 
-      if (!groupMember) {
-        await supabase
+        // Aggiungi l'utente al gruppo se non presente
+        const { data: groupMember } = await supabase
           .from('group_members')
-          .upsert({ group_id: group.id, user_id: session.user.id });
+          .select('*')
+          .eq('user_id', session.user.id)
+          .eq('group_id', group.id)
+          .single();
+
+        if (!groupMember) {
+          await supabase
+            .from('group_members')
+            .upsert({ group_id: group.id, user_id: session.user.id });
+        }
+      } catch (error) {
+        console.error('Errore nella gestione di profilo e gruppo:', error);
       }
     };
 
     handleProfileAndGroup();
   }, [session]);
 
-  // Funzione per registrare SW e sottoscrivere push
+  // Funzione per sottoscrivere alle notifiche push
   const requestPushPermission = async () => {
-    if (!session) return;
-    if (!('Notification' in window) || !('serviceWorker' in navigator)) return;
+    if (!session) {
+      console.warn('Utente non autenticato');
+      return;
+    }
 
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') {
-      console.warn('Permesso per le notifiche negato.');
+    if (!('Notification' in window) || !('serviceWorker' in navigator)) {
+      console.warn('Browser non supporta le notifiche push');
       return;
     }
 
     try {
-      const registration = await navigator.serviceWorker.register('/service-worker.js');
+      // Richiedi permesso per le notifiche
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        console.warn('Permesso per le notifiche negato.');
+        return;
+      }
 
-      // Attendi che il SW sia attivo
-      if (registration.installing) {
-        await new Promise(resolve => {
-          registration.installing.addEventListener('statechange', e => {
-            if (e.target.state === 'activated') resolve();
-          });
+      // Ottieni la registrazione del Service Worker esistente
+      const registration = await navigator.serviceWorker.ready;
+      
+      const VAPID_PUBLIC_KEY = process.env.REACT_APP_VAPID_PUBLIC_KEY;
+      if (!VAPID_PUBLIC_KEY) {
+        console.error('Chiave VAPID pubblica mancante');
+        return;
+      }
+
+      const applicationServerKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
+
+      // Controlla se esiste già una sottoscrizione
+      let subscription = await registration.pushManager.getSubscription();
+      
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey
         });
       }
 
-      const VAPID_PUBLIC_KEY = process.env.REACT_APP_VAPID_PUBLIC_KEY;
-      const applicationServerKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
-
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey
-      });
-
       const pushToken = JSON.stringify(subscription);
 
+      // Salva il token nel database
       const { error } = await supabase
         .from('user_devices')
-        .upsert({ user_id: session.user.id, push_token: pushToken }, { onConflict: ['push_token'] });
+        .upsert(
+          { user_id: session.user.id, push_token: pushToken }, 
+          { onConflict: 'user_id' }
+        );
 
-      if (error) console.error('Errore nel salvare il push token:', error);
-      else console.log('Push token salvato con successo!');
+      if (error) {
+        console.error('Errore nel salvare il push token:', error);
+      } else {
+        console.log('Push token salvato con successo!');
+        alert('Notifiche attivate con successo!');
+      }
     } catch (err) {
       console.error('Errore nella registrazione o sottoscrizione alle notifiche push:', err);
+      alert('Errore nell\'attivazione delle notifiche: ' + err.message);
     }
   };
 
@@ -156,7 +195,20 @@ function App() {
               <ProtectedRoutes session={session} />
               {/* Bottone per attivare notifiche */}
               {session && (
-                <button onClick={requestPushPermission} style={{ position: 'fixed', bottom: 20, right: 20 }}>
+                <button 
+                  onClick={requestPushPermission} 
+                  style={{ 
+                    position: 'fixed', 
+                    bottom: 20, 
+                    right: 20,
+                    padding: '10px 15px',
+                    backgroundColor: '#007bff',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '5px',
+                    cursor: 'pointer'
+                  }}
+                >
                   Attiva Notifiche
                 </button>
               )}
