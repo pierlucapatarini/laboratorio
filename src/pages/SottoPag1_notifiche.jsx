@@ -5,6 +5,7 @@ const SottoPag1_notifiche = () => {
   const [message, setMessage] = useState('');
   const [group, setGroup] = useState(null);
   const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
 
   const VAPID_PUBLIC_KEY = process.env.REACT_APP_VAPID_PUBLIC_KEY;
 
@@ -23,6 +24,7 @@ const SottoPag1_notifiche = () => {
         setGroup(data);
       }
     };
+
     fetchGroup();
   }, []);
 
@@ -36,14 +38,17 @@ const SottoPag1_notifiche = () => {
   const handleSendNotification = async (e) => {
     e.preventDefault();
     setError(null);
+    setLoading(true);
 
     if (!message.trim()) {
       setError('Il messaggio non può essere vuoto.');
+      setLoading(false);
       return;
     }
 
     if (!group) {
       setError('Impossibile trovare il gruppo. Riprova più tardi.');
+      setLoading(false);
       return;
     }
 
@@ -51,32 +56,29 @@ const SottoPag1_notifiche = () => {
       // Controllo chiave VAPID
       if (!VAPID_PUBLIC_KEY) {
         setError('Chiave pubblica VAPID mancante.');
+        setLoading(false);
         return;
       }
 
       // Controllo supporto Service Worker e Push
       if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
         setError('Il tuo browser non supporta le notifiche push.');
+        setLoading(false);
         return;
       }
 
-      // Richiesta permesso notifiche
+      // Richiesta permesso notifiche (solo su gesture)
       if (Notification.permission !== 'granted') {
         const permission = await Notification.requestPermission();
         if (permission !== 'granted') {
           setError('Permesso per le notifiche negato.');
+          setLoading(false);
           return;
         }
       }
 
-      // Registrazione service worker
+      // Registrazione Service Worker
       const swUrl = '/service-worker.js';
-      const response = await fetch(swUrl);
-      if (!response.ok) {
-        setError('Service Worker non trovato. Verifica che /service-worker.js esista.');
-        return;
-      }
-
       const registration = await navigator.serviceWorker.register(swUrl);
 
       // Creazione subscription push
@@ -85,20 +87,17 @@ const SottoPag1_notifiche = () => {
         applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
       });
 
-      const pushToken = JSON.stringify(subscription);
-
-      // Salvataggio in Supabase
+      // Salvataggio token in Supabase
+      const userId = supabase.auth.getUser().data.user.id;
       const { error: tokenError } = await supabase
         .from('user_devices')
-        .upsert(
-          { user_id: supabase.auth.getUser().data.user.id, push_token: pushToken },
-          { onConflict: ['push_token'] }
-        );
+        .upsert({ user_id: userId, push_token: JSON.stringify(subscription) }, { onConflict: ['push_token'] });
 
       if (tokenError) {
         console.error('Errore nel salvare il push token:', tokenError);
-      } else {
-        console.log('Push token salvato con successo!');
+        setError('Errore nel salvare il token delle notifiche.');
+        setLoading(false);
+        return;
       }
 
       // Invio notifica tramite Edge Function
@@ -117,6 +116,8 @@ const SottoPag1_notifiche = () => {
       console.error('Errore nella registrazione alle notifiche push:', err);
       setError('Si è verificato un errore. Controlla la console.');
     }
+
+    setLoading(false);
   };
 
   return (
@@ -134,15 +135,16 @@ const SottoPag1_notifiche = () => {
             className="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline"
             placeholder="Scrivi il tuo messaggio..."
             rows="4"
-          ></textarea>
+          />
         </div>
         {error && <p className="text-red-500 text-xs italic mb-4">{error}</p>}
         <div className="flex items-center justify-between">
           <button
             type="submit"
+            disabled={loading}
             className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
           >
-            Invia Notifica
+            {loading ? 'Invio...' : 'Invia Notifica'}
           </button>
         </div>
       </form>
