@@ -179,8 +179,7 @@ function App() {
         const { error } = await supabase
           .from('user_devices')
           .upsert(
-            { user_id: session.user.id, push_token: pushToken }, 
-            { onConflict: 'user_id' }
+            { user_id: session.user.id, push_token: pushToken }
           );
 
         if (error) {
@@ -219,15 +218,13 @@ function App() {
         return;
       }
 
-      // Salva che l'utente vuole notifiche in modalità fallback
       const { error } = await supabase
         .from('user_devices')
         .upsert(
           { 
             user_id: session.user.id, 
             push_token: 'fallback-mode'
-          }, 
-          { onConflict: 'user_id' }
+          }
         );
 
       if (error) {
