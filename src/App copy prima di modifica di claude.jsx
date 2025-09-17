@@ -1,12 +1,20 @@
 import { useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom';
 import { supabase } from './utils/supabaseClient';
-import { messaging } from './utils/firebase-config';
-import { getToken, onMessage } from 'firebase/messaging';
+import { messaging } from './utils/firebase-config'; // Importa la configurazione di Firebase
+import { getToken } from 'firebase/messaging'; // Importa getToken da firebase/messaging
 
 import Pag_auth from './pages/Pag_auth';
 import Pag0_menu from './pages/Pag0_menu';
 import SottoPag1_notifiche from './pages/SottoPag1_notifiche';
+
+// Funzione helper per convertire la chiave VAPID
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  return new Uint8Array([...rawData].map(char => char.charCodeAt(0)));
+}
 
 const ProtectedRoutes = ({ session }) => {
   const navigate = useNavigate();
@@ -32,13 +40,8 @@ const ProtectedRoutes = ({ session }) => {
 function App() {
   const [session, setSession] = useState(null);
   const [debugInfo, setDebugInfo] = useState('');
-  const [isSubscribed, setIsSubscribed] = useState(false);
 
-  const addDebug = (message) => {
-    console.log(message);
-    setDebugInfo(prev => prev + '\n' + new Date().toLocaleTimeString() + ': ' + message);
-  };
-
+  // Debug delle variabili d'ambiente all'avvi   o
   useEffect(() => {
     const debugEnv = () => {
       addDebug('🔧 DEBUG AMBIENTE ALL\'AVVIO:');
@@ -46,15 +49,31 @@ function App() {
       addDebug('- Host: ' + window.location.host);
       addDebug('- Protocol: ' + window.location.protocol);
       
+      // Controlla se siamo in produzione Vercel
       if (window.location.host.includes('vercel.app')) {
         addDebug('- Piattaforma: Vercel (produzione)');
       } else if (window.location.host.includes('localhost')) {
         addDebug('- Piattaforma: Locale (sviluppo)');
       }
+      
+      // Debug variabili d'ambiente
+      if (typeof process !== 'undefined' && process.env) {
+        const allReactVars = Object.keys(process.env)
+          .filter(key => key.startsWith('REACT_APP_'))
+          .map(key => `${key}: ${process.env[key] ? 'PRESENTE' : 'VUOTA'}`);
+        addDebug('- Variabili REACT_APP: ' + (allReactVars.length > 0 ? allReactVars.join(', ') : 'NESSUNA'));
+      } else {
+        addDebug('- process.env non disponibile (normale in produzione ottimizzata)');
+      }
     };
     
     debugEnv();
   }, []);
+
+  const addDebug = (message) => {
+    console.log(message);
+    setDebugInfo(prev => prev + '\n' + new Date().toLocaleTimeString() + ': ' + message);
+  };
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
@@ -65,14 +84,16 @@ function App() {
     return () => authListener.subscription.unsubscribe();
   }, []);
 
-  // Registrazione del Service Worker
+  // Registrazione del Service Worker all'avvio dell'app
   useEffect(() => {
     const registerServiceWorker = async () => {
       if ('serviceWorker' in navigator) {
         try {
+          // Nota: la registrazione del SW di Firebase ora è in index.js
           const registration = await navigator.serviceWorker.ready;
           addDebug('✅ Service Worker registrato e pronto');
           
+          // Verifica lo stato del service worker
           if (registration.installing) {
             addDebug('🔄 Service Worker in installazione...');
           } else if (registration.waiting) {
@@ -91,7 +112,6 @@ function App() {
     registerServiceWorker();
   }, []);
 
-  // Gestione profilo e gruppo
   useEffect(() => {
     const handleProfileAndGroup = async () => {
       if (!session) return;
@@ -99,6 +119,7 @@ function App() {
       try {
         addDebug('🔄 Configurazione profilo e gruppo...');
         
+        // Trova o crea il gruppo "famiglia"
         let { data: group, error: groupError } = await supabase
           .from('groups')
           .select('id')
@@ -120,6 +141,7 @@ function App() {
           addDebug('✅ Gruppo "famiglia" trovato');
         }
 
+        // Trova o crea il profilo utente
         const { data: profile } = await supabase
           .from('profiles')
           .select('*')
@@ -135,6 +157,7 @@ function App() {
           addDebug('✅ Profilo utente trovato');
         }
 
+        // Aggiungi l'utente al gruppo se non presente
         const { data: groupMember } = await supabase
           .from('group_members')
           .select('*')
@@ -158,53 +181,8 @@ function App() {
     handleProfileAndGroup();
   }, [session]);
 
-  // Gestione messaggi FCM in foreground
-  useEffect(() => {
-    if (!messaging) return;
-
-    const unsubscribe = onMessage(messaging, (payload) => {
-      addDebug('📨 Messaggio FCM ricevuto in foreground');
-      console.log('Messaggio in foreground:', payload);
-      
-      // Mostra notifica personalizzata
-      if (payload.notification) {
-        new Notification(payload.notification.title, {
-          body: payload.notification.body,
-          icon: '/images/icon-192x192.png'
-        });
-      }
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  // Controllo stato sottoscrizione FCM
-  useEffect(() => {
-    const checkFCMSubscription = async () => {
-      if (!session) return;
-      
-      try {
-        const { data: deviceData } = await supabase
-          .from('user_devices')
-          .select('push_token')
-          .eq('user_id', session.user.id)
-          .single();
-        
-        if (deviceData && deviceData.push_token) {
-          const tokenData = JSON.parse(deviceData.push_token);
-          setIsSubscribed(!!tokenData.fcmToken);
-          addDebug('✅ Stato sottoscrizione FCM controllato: ' + (!!tokenData.fcmToken ? 'ATTIVA' : 'INATTIVA'));
-        }
-      } catch (error) {
-        addDebug('ℹ️ Nessuna sottoscrizione FCM trovata');
-      }
-    };
-
-    checkFCMSubscription();
-  }, [session]);
-
-  // Funzione per attivare notifiche FCM (senza VAPID)
-  const requestFCMPermission = async () => {
+  // Funzione per sottoscrivere alle notifiche push (con debug dettagliato)
+  const requestPushPermission = async () => {
     try {
       addDebug('🔄 Inizio processo attivazione notifiche FCM...');
       
@@ -213,8 +191,9 @@ function App() {
         return;
       }
       
-      if (!('Notification' in window) || !('serviceWorker' in navigator)) {
-        addDebug('❌ Browser non supporta le notifiche');
+      // Controlli supporto browser
+      if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+        addDebug('❌ Browser non supporta le API necessarie per le notifiche push.');
         return;
       }
 
@@ -225,26 +204,28 @@ function App() {
       
       if (permission !== 'granted') {
         addDebug('❌ Permesso per le notifiche negato');
-        alert('❌ Permesso per le notifiche negato');
         return;
       }
 
-      // Attendi che il service worker sia pronto
-      addDebug('🔄 Attesa Service Worker ready...');
-      await navigator.serviceWorker.ready;
-      addDebug('✅ Service Worker pronto');
+      // Ottieni il token di registrazione FCM
+      const VAPID_PUBLIC_KEY = process.env.REACT_APP_VAPID_PUBLIC_KEY;
+      if (!VAPID_PUBLIC_KEY) {
+        addDebug('❌ Chiave VAPID pubblica mancante');
+        return;
+      }
 
-      // Ottieni token FCM (senza VAPID key)
-      addDebug('🔄 Ottenimento token FCM...');
-      const fcmToken = await getToken(messaging);
+      addDebug('🔄 Ottenimento token di registrazione FCM...');
+      const fcmToken = await getToken(messaging, {
+        vapidKey: VAPID_PUBLIC_KEY
+      });
 
       if (!fcmToken) {
-        throw new Error('Impossibile ottenere il token FCM');
+        throw new Error('Impossibile ottenere il token di registrazione FCM.');
       }
       
-      addDebug('✅ Token FCM ottenuto: ' + fcmToken.substring(0, 20) + '...');
+      addDebug('✅ Token FCM ottenuto: ' + fcmToken);
 
-      // Salva il token nel database
+      // Salva il token nel database.
       const { error } = await supabase
         .from('user_devices')
         .upsert(
@@ -255,16 +236,13 @@ function App() {
       if (error) {
         addDebug('❌ Errore salvataggio token: ' + error.message);
         throw error;
+      } else {
+        addDebug('✅ Token FCM salvato nel database con successo!');
+        alert('🎉 Notifiche attivate con successo!');
       }
-
-      addDebug('✅ Token FCM salvato nel database con successo!');
-      setIsSubscribed(true);
-      alert('🎉 Notifiche FCM attivate con successo!');
-
     } catch (err) {
-      addDebug('❌ ERRORE FCM: ' + err.name + ' - ' + err.message);
-      console.error('Errore dettagliato FCM:', err);
-      alert('❌ Errore nell\'attivazione delle notifiche FCM: ' + err.message);
+      addDebug('❌ ERRORE GENERALE: ' + err.name + ' - ' + err.message);
+      alert('❌ Errore nell\'attivazione delle notifiche. Controlla la console per i dettagli.');
     }
   };
 
@@ -277,41 +255,35 @@ function App() {
           element={
             <>
               <ProtectedRoutes session={session} />
+              {/* Bottone per attivare notifiche */}
               {session && (
                 <div style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 1000 }}>
                   <button 
-                    onClick={requestFCMPermission} 
+                    onClick={requestPushPermission} 
                     style={{ 
                       display: 'block',
                       marginBottom: '10px',
                       padding: '10px 15px',
-                      backgroundColor: isSubscribed ? '#28a745' : '#007bff',
+                      backgroundColor: '#007bff',
                       color: 'white',
                       border: 'none',
                       borderRadius: '5px',
                       cursor: 'pointer'
                     }}
                   >
-                    {isSubscribed ? '✅ Notifiche Attive' : 'Attiva Notifiche FCM'}
+                    Attiva Notifiche
                   </button>
                   
+                  {/* Bottone per mostrare debug */}
                   <button 
                     onClick={() => {
-                      const debugWindow = window.open('', '_blank', 'width=700,height=500');
+                      const debugWindow = window.open('', '_blank', 'width=600,height=400');
                       debugWindow.document.write(`
                         <html>
-                          <head>
-                            <title>Debug FCM</title>
-                            <style>
-                              body { font-family: Arial, sans-serif; margin: 20px; }
-                              pre { background: #f5f5f5; padding: 15px; border-radius: 5px; font-size: 12px; overflow-x: auto; }
-                              .status { color: ${isSubscribed ? 'green' : 'red'}; font-weight: bold; }
-                            </style>
-                          </head>
+                          <head><title>Debug Info</title></head>
                           <body>
-                            <h2>🔍 Debug Notifiche FCM</h2>
-                            <p>Stato notifiche: <span class="status">${isSubscribed ? '✅ ATTIVE' : '❌ NON ATTIVE'}</span></p>
-                            <pre>${debugInfo}</pre>
+                            <h2>Debug Notifiche Push</h2>
+                            <pre style="font-family: monospace; font-size: 12px; background: #f5f5f5; padding: 10px; border: 1px solid #ddd;">${debugInfo}</pre>
                           </body>
                         </html>
                       `);
@@ -327,7 +299,7 @@ function App() {
                       fontSize: '12px'
                     }}
                   >
-                    Debug FCM
+                    Debug Info
                   </button>
                 </div>
               )}
