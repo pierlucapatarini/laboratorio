@@ -91,29 +91,13 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // Prima ottieni gli user_id del gruppo
-    const { data: groupMembers, error: membersError } = await supabase
-      .from("group_members")
-      .select("user_id")
-      .eq("group_id", group_id);
-
-    if (membersError) throw membersError;
-
-    if (!groupMembers || groupMembers.length === 0) {
-      return new Response(JSON.stringify({ message: "Nessun membro nel gruppo." }), {
-        status: 200,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
-      });
-    }
-
-    // Estrai gli user_id
-    const userIds = groupMembers.map(member => member.user_id);
-
-    // Ora ottieni i dispositivi di questi utenti
     const { data: userDevices, error: devicesError } = await supabase
       .from("user_devices")
       .select("push_token")
-      .in("user_id", userIds);
+      .in(
+        "user_id",
+        supabase.from("group_members").select("user_id").eq("group_id", group_id)
+      );
 
     if (devicesError) throw devicesError;
 

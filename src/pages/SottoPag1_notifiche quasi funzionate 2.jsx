@@ -50,7 +50,7 @@ const SottoPag1_notifiche = ({ isSubscribed }) => {
       // Invia la notifica a tutti i membri del gruppo
       const { data, error } = await supabase.functions.invoke('send-notification', {
         body: { 
-          group_id: group.id,  // ✅ CORRETTO: cambiato da groupId a group_id
+          groupId: group.id, 
           message 
         },
       });
@@ -112,12 +112,6 @@ const SottoPag1_notifiche = ({ isSubscribed }) => {
             )}
           </button>
         </form>
-
-        {error && (
-          <div className="mt-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded">
-            {error}
-          </div>
-        )}
 
         <div className="mt-6 text-center p-4 bg-gray-50 rounded-lg">
           <p className="text-sm text-gray-600 mb-2">
