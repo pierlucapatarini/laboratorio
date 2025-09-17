@@ -1,27 +1,25 @@
 // Importa la SDK di Firebase, che deve essere disponibile nel Service Worker
+// Assicurati che questo path sia corretto per la tua build
 importScripts('https://www.gstatic.com/firebasejs/10.9.0/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.9.0/firebase-messaging-compat.js');
 
 // Inserisci qui la tua configurazione di Firebase
+// È cruciale che questi valori siano identici a quelli in firebase-config.js
 const firebaseConfig = {
     apiKey: "AIzaSyBR7PoPH287TPJSK368vrgI9T1HsKjcFP4",
-    authDomain: "laboratorio-ea376.firebaseapp.com",
-    projectId: "laboratorio-ea376",
-    storageBucket: "laboratorio-ea376.firebasestorage.app",
-    messagingSenderId: "649170330417",
-    appId: "1:649170330417:web:c47d49525eb5d339030610",
-    measurementId: "G-08972YZ7ZT"
+  authDomain: "laboratorio-ea376.firebaseapp.com",
+  projectId: "laboratorio-ea376",
+  storageBucket: "laboratorio-ea376.firebasestorage.app",
+  messagingSenderId: "649170330417",
+  appId: "1:649170330417:web:c47d49525eb5d339030610",
+  measurementId: "G-08972YZ7ZT"
 };
 
 // Inizializza l'app Firebase nel Service Worker
 firebase.initializeApp(firebaseConfig);
 
-// Inizializza Firebase Messaging
+// Inizializza Firebase Messaging e gestisci i messaggi in background
 const messaging = firebase.messaging();
-
-// AGGIUNGI QUESTA RIGA: imposta la chiave VAPID pubblica
-const VAPID_PUBLIC_KEY = 'BCbRSR8QZzPa7XOOcnUoNv1WQqn7p9TVdOwWjDJOF3aoxPOBJx4PC8vN3YLEPVjodcbJrkkg2XR00hbbJzy8R1k';
-messaging.usePublicVapidKey(VAPID_PUBLIC_KEY);
 
 // Gestisci i messaggi ricevuti in background (quando l'app non è in primo piano)
 messaging.onBackgroundMessage((payload) => {

@@ -8,7 +8,8 @@ import Pag_auth from './pages/Pag_auth';
 import Pag0_menu from './pages/Pag0_menu';
 import SottoPag1_notifiche from './pages/SottoPag1_notifiche';
 
-const ProtectedRoutes = ({ session }) => {
+// Modifica ProtectedRoutes per accettare le props
+const ProtectedRoutes = ({ session, isSubscribed, setIsSubscribed, debugInfo, addDebug, requestForToken }) => {
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -24,7 +25,8 @@ const ProtectedRoutes = ({ session }) => {
     <Routes>
       <Route path="/" element={<Pag0_menu />} />
       <Route path="/menu" element={<Pag0_menu />} />
-      <Route path="/notifiche" element={<SottoPag1_notifiche />} />
+      {/* Passa `isSubscribed` al componente figlio */}
+      <Route path="/notifiche" element={<SottoPag1_notifiche isSubscribed={isSubscribed} />} />
     </Routes>
   );
 };
@@ -39,266 +41,196 @@ function App() {
     setDebugInfo(prev => prev + '\n' + new Date().toLocaleTimeString() + ': ' + message);
   };
 
-  useEffect(() => {
-    const debugEnv = () => {
-      addDebug('🔧 DEBUG AMBIENTE ALL\'AVVIO:');
-      addDebug('- Ambiente: ' + (process.env.NODE_ENV || 'sconosciuto'));
-      addDebug('- Host: ' + window.location.host);
-      addDebug('- Protocol: ' + window.location.protocol);
-      
-      if (window.location.host.includes('vercel.app')) {
-        addDebug('- Piattaforma: Vercel (produzione)');
-      } else if (window.location.host.includes('localhost')) {
-        addDebug('- Piattaforma: Locale (sviluppo)');
-      }
-    };
-    
-    debugEnv();
-  }, []);
+  const VAPID_PUBLIC_KEY = process.env.REACT_APP_VAPID_PUBLIC_KEY;
+
+  const requestForToken = async () => {
+    addDebug('🔄 Inizio processo attivazione notifiche FCM...');
+    try {
+        addDebug('🔄 Richiesta permesso notifiche...');
+        const permission = await Notification.requestPermission();
+        addDebug(`📋 Permesso ricevuto: ${permission}`);
+        if (permission === 'granted') {
+            addDebug('🔄 Attesa Service Worker ready...');
+            await navigator.serviceWorker.ready;
+            addDebug('✅ Service Worker pronto');
+
+            addDebug('🔄 Ottenimento token FCM...');
+            const currentToken = await getToken(messaging, { vapidKey: VAPID_PUBLIC_KEY });
+            if (currentToken) {
+                addDebug('✅ Token FCM ottenuto. Salvataggio in corso...');
+                const { data: { user } } = await supabase.auth.getUser();
+                if (user) {
+                    // Cerca il device esistente
+                    const { data: existingDevice, error: fetchError } = await supabase
+                        .from('user_devices')
+                        .select('push_token')
+                        .eq('user_id', user.id)
+                        .eq('push_token', JSON.stringify({ fcmToken: currentToken }))
+                        .single();
+
+                    if (existingDevice) {
+                        addDebug('✅ Token già presente nel database. Non serve salvare.');
+                        setIsSubscribed(true);
+                    } else {
+                        // Aggiorna o crea un nuovo record se non esiste
+                        const { data, error } = await supabase
+                            .from('user_devices')
+                            .insert([{
+                                user_id: user.id,
+                                push_token: JSON.stringify({ fcmToken: currentToken }),
+                                created_at: new Date()
+                            }])
+                            .select();
+
+                        if (error) {
+                            console.error('Errore durante il salvataggio del token:', error);
+                            addDebug(`❌ Errore salvataggio token: ${error.message}`);
+                            setIsSubscribed(false);
+                        } else {
+                            addDebug('✅ Token salvato con successo!');
+                            setIsSubscribed(true);
+                        }
+                    }
+                }
+                
+            } else {
+                addDebug('ℹ️ Non è stato possibile ottenere il token FCM.');
+                setIsSubscribed(false);
+            }
+        } else {
+            addDebug('❌ Permesso di notifica negato.');
+            setIsSubscribed(false);
+        }
+    } catch (err) {
+        addDebug(`❌ ERRORE FCM: ${err.name} - ${err.message}`);
+        setIsSubscribed(false);
+    }
+  };
+
+  const onMessageListener = () =>
+    new Promise((resolve) => {
+      onMessage(messaging, (payload) => {
+        resolve(payload);
+      });
+    });
+
+  const checkFCMSubscriptionStatus = async () => {
+    addDebug('🔄 Configurazione profilo e gruppo...');
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    addDebug('✅ Profilo utente trovato');
+
+    try {
+        const { data: groupData, error: groupError } = await supabase
+            .from('groups')
+            .select('id')
+            .eq('name', 'famiglia')
+            .single();
+
+        if (groupError) {
+            console.error('Errore nel caricare il gruppo:', groupError);
+            addDebug('❌ Errore nel caricare il gruppo');
+            return;
+        }
+
+        addDebug('✅ Gruppo "famiglia" trovato');
+
+        // Controlla se l'utente è già nel gruppo
+        const { data: userGroupData, error: userGroupError } = await supabase
+            .from('group_members')
+            .select('*')
+            .eq('user_id', user.id)
+            .eq('group_id', groupData.id);
+
+        if (userGroupData && userGroupData.length > 0) {
+            addDebug('✅ Utente già nel gruppo');
+        } else {
+            addDebug('ℹ️ Utente non nel gruppo, aggiunta in corso...');
+            const { error: insertError } = await supabase
+                .from('group_members')
+                .insert([{ user_id: user.id, group_id: groupData.id }]);
+
+            if (insertError) {
+                console.error('Errore nell\'aggiungere l\'utente al gruppo:', insertError);
+                addDebug('❌ Errore nell\'aggiungere l\'utente al gruppo');
+            } else {
+                addDebug('✅ Utente aggiunto al gruppo!');
+            }
+        }
+
+        // Cerca la sottoscrizione FCM dell'utente
+        const { data: deviceData, error: deviceError } = await supabase
+            .from('user_devices')
+            .select('push_token')
+            .eq('user_id', user.id);
+
+        if (deviceError || !deviceData || deviceData.length === 0) {
+            addDebug('ℹ️ Nessuna sottoscrizione FCM trovata');
+            setIsSubscribed(false);
+        } else {
+            addDebug('✅ Sottoscrizione FCM trovata');
+            setIsSubscribed(true);
+        }
+
+    } catch (err) {
+        console.error('Errore generale nella configurazione:', err);
+        addDebug(`❌ Errore configurazione: ${err.message}`);
+        setIsSubscribed(false);
+    }
+  };
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+    });
 
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
+      if (newSession) {
+        checkFCMSubscriptionStatus();
+      }
     });
+
+    // Ascolta i messaggi FCM in foreground
+    onMessageListener().then((payload) => {
+        addDebug('🔔 Messaggio FCM ricevuto in primo piano!');
+        // Potresti voler visualizzare una notifica in-app qui
+        console.log('Messaggio ricevuto:', payload);
+    });
+
     return () => authListener.subscription.unsubscribe();
   }, []);
-
-  // Registrazione del Service Worker
-  useEffect(() => {
-    const registerServiceWorker = async () => {
-      if ('serviceWorker' in navigator) {
-        try {
-          const registration = await navigator.serviceWorker.ready;
-          addDebug('✅ Service Worker registrato e pronto');
-          
-          if (registration.installing) {
-            addDebug('🔄 Service Worker in installazione...');
-          } else if (registration.waiting) {
-            addDebug('⏳ Service Worker in attesa...');
-          } else if (registration.active) {
-            addDebug('✅ Service Worker attivo');
-          }
-        } catch (error) {
-          addDebug('❌ Errore nella verifica dello stato SW: ' + error.message);
-        }
-      } else {
-        addDebug('❌ Service Worker non supportato');
-      }
-    };
-
-    registerServiceWorker();
-  }, []);
-
-  // Gestione profilo e gruppo
-  useEffect(() => {
-    const handleProfileAndGroup = async () => {
-      if (!session) return;
-
-      try {
-        addDebug('🔄 Configurazione profilo e gruppo...');
-        
-        let { data: group, error: groupError } = await supabase
-          .from('groups')
-          .select('id')
-          .eq('name', 'famiglia')
-          .single();
-
-        if (groupError && groupError.code === 'PGRST116') {
-          const { data } = await supabase
-            .from('groups')
-            .insert({ name: 'famiglia' })
-            .select()
-            .single();
-          group = data;
-          addDebug('✅ Gruppo "famiglia" creato');
-        } else if (groupError) {
-          addDebug('❌ Errore gruppo: ' + groupError.message);
-          return;
-        } else {
-          addDebug('✅ Gruppo "famiglia" trovato');
-        }
-
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .single();
-
-        if (!profile) {
-          await supabase
-            .from('profiles')
-            .upsert({ id: session.user.id, username: session.user.email });
-          addDebug('✅ Profilo utente creato');
-        } else {
-          addDebug('✅ Profilo utente trovato');
-        }
-
-        const { data: groupMember } = await supabase
-          .from('group_members')
-          .select('*')
-          .eq('user_id', session.user.id)
-          .eq('group_id', group.id)
-          .single();
-
-        if (!groupMember) {
-          await supabase
-            .from('group_members')
-            .upsert({ group_id: group.id, user_id: session.user.id });
-          addDebug('✅ Utente aggiunto al gruppo');
-        } else {
-          addDebug('✅ Utente già nel gruppo');
-        }
-      } catch (error) {
-        addDebug('❌ Errore setup: ' + error.message);
-      }
-    };
-
-    handleProfileAndGroup();
-  }, [session]);
-
-  // Gestione messaggi FCM in foreground
-  useEffect(() => {
-    if (!messaging) return;
-
-    const unsubscribe = onMessage(messaging, (payload) => {
-      addDebug('📨 Messaggio FCM ricevuto in foreground');
-      console.log('Messaggio in foreground:', payload);
-      
-      // Mostra notifica personalizzata
-      if (payload.notification) {
-        new Notification(payload.notification.title, {
-          body: payload.notification.body,
-          icon: '/images/icon-192x192.png'
-        });
-      }
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  // Controllo stato sottoscrizione FCM
-  useEffect(() => {
-    const checkFCMSubscription = async () => {
-      if (!session) return;
-      
-      try {
-        const { data: deviceData } = await supabase
-          .from('user_devices')
-          .select('push_token')
-          .eq('user_id', session.user.id)
-          .single();
-        
-        if (deviceData && deviceData.push_token) {
-          const tokenData = JSON.parse(deviceData.push_token);
-          setIsSubscribed(!!tokenData.fcmToken);
-          addDebug('✅ Stato sottoscrizione FCM controllato: ' + (!!tokenData.fcmToken ? 'ATTIVA' : 'INATTIVA'));
-        }
-      } catch (error) {
-        addDebug('ℹ️ Nessuna sottoscrizione FCM trovata');
-      }
-    };
-
-    checkFCMSubscription();
-  }, [session]);
-
-  // Funzione per attivare notifiche FCM (senza VAPID)
-  const requestFCMPermission = async () => {
-    try {
-      addDebug('🔄 Inizio processo attivazione notifiche FCM...');
-      
-      if (!session) {
-        addDebug('❌ Utente non autenticato');
-        return;
-      }
-      
-      if (!('Notification' in window) || !('serviceWorker' in navigator)) {
-        addDebug('❌ Browser non supporta le notifiche');
-        return;
-      }
-
-      // Richiedi permesso per le notifiche
-      addDebug('🔄 Richiesta permesso notifiche...');
-      const permission = await Notification.requestPermission();
-      addDebug('📋 Permesso ricevuto: ' + permission);
-      
-      if (permission !== 'granted') {
-        addDebug('❌ Permesso per le notifiche negato');
-        alert('❌ Permesso per le notifiche negato');
-        return;
-      }
-
-      // Attendi che il service worker sia pronto
-      addDebug('🔄 Attesa Service Worker ready...');
-      await navigator.serviceWorker.ready;
-      addDebug('✅ Service Worker pronto');
-
-      // Ottieni token FCM (senza VAPID key)
-      addDebug('🔄 Ottenimento token FCM...');
-      const fcmToken = await getToken(messaging);
-
-      if (!fcmToken) {
-        throw new Error('Impossibile ottenere il token FCM');
-      }
-      
-      addDebug('✅ Token FCM ottenuto: ' + fcmToken.substring(0, 20) + '...');
-
-      // Salva il token nel database
-      const { error } = await supabase
-        .from('user_devices')
-        .upsert(
-          { user_id: session.user.id, push_token: JSON.stringify({ fcmToken }) },
-          { onConflict: 'user_id' }
-        );
-
-      if (error) {
-        addDebug('❌ Errore salvataggio token: ' + error.message);
-        throw error;
-      }
-
-      addDebug('✅ Token FCM salvato nel database con successo!');
-      setIsSubscribed(true);
-      alert('🎉 Notifiche FCM attivate con successo!');
-
-    } catch (err) {
-      addDebug('❌ ERRORE FCM: ' + err.name + ' - ' + err.message);
-      console.error('Errore dettagliato FCM:', err);
-      alert('❌ Errore nell\'attivazione delle notifiche FCM: ' + err.message);
-    }
-  };
 
   return (
     <Router>
       <Routes>
         <Route path="/auth" element={<Pag_auth />} />
-        <Route
-          path="/*"
-          element={
+        <Route path="/*" element={
             <>
-              <ProtectedRoutes session={session} />
+              {/* Passa le props necessarie a ProtectedRoutes */}
+              <ProtectedRoutes session={session} isSubscribed={isSubscribed} />
               {session && (
-                <div style={{ position: 'fixed', bottom: 20, right: 20, zIndex: 1000 }}>
-                  <button 
-                    onClick={requestFCMPermission} 
-                    style={{ 
-                      display: 'block',
-                      marginBottom: '10px',
+                <div style={{ position: 'fixed', bottom: '20px', right: '20px', zIndex: 1000 }}>
+                  <button
+                    onClick={requestForToken}
+                    style={{
                       padding: '10px 15px',
-                      backgroundColor: isSubscribed ? '#28a745' : '#007bff',
+                      backgroundColor: isSubscribed ? '#6c757d' : '#007bff',
                       color: 'white',
                       border: 'none',
                       borderRadius: '5px',
-                      cursor: 'pointer'
+                      cursor: 'pointer',
+                      fontSize: '14px'
                     }}
+                    disabled={isSubscribed}
                   >
-                    {isSubscribed ? '✅ Notifiche Attive' : 'Attiva Notifiche FCM'}
+                    {isSubscribed ? 'Notifiche FCM ATTIVE' : 'Attiva Notifiche FCM'}
                   </button>
-                  
-                  <button 
+                  <button
                     onClick={() => {
-                      const debugWindow = window.open('', '_blank', 'width=700,height=500');
-                      debugWindow.document.write(`
+                      const newWindow = window.open('', '_blank', 'width=600,height=800,scrollbars=yes,resizable=yes');
+                      newWindow.document.write(`
                         <html>
                           <head>
                             <title>Debug FCM</title>
