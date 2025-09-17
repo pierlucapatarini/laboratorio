@@ -1,6 +1,7 @@
 {
   "imports": {
-    "webpush": "https://esm.sh/web-push@3.6.6"
+    "webpush": "https://esm.sh/web-push@3.6.6",
+    "jwt": "https://deno.land/x/djwt@v2.8/mod.ts"
   },
   "compilerOptions": {
     "lib": ["deno.ns", "dom"]

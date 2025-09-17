@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.4";
-import webpush from "https://esm.sh/web-push@3.6.6";
+import { create as createJwt, getNumericDate, parse as parseJwt } from "jwt";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -8,8 +8,70 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS'
 };
 
+const FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
+let accessTokenCache: { token: string; expires: number } | null = null;
+
+// Funzione per generare il token di accesso JWT
+const getAccessToken = async () => {
+  if (accessTokenCache && accessTokenCache.expires > Date.now()) {
+    return accessTokenCache.token;
+  }
+
+  try {
+    const serviceAccountJson = Deno.env.get("FCM_SERVICE_ACCOUNT");
+    if (!serviceAccountJson) {
+      throw new Error("FCM_SERVICE_ACCOUNT environment variable not found.");
+    }
+
+    const serviceAccount = JSON.parse(serviceAccountJson);
+    const { private_key, client_email } = serviceAccount;
+
+    const header = {
+      alg: "RS256",
+      typ: "JWT"
+    };
+
+    const now = getNumericDate(0);
+    const payload = {
+      iss: client_email,
+      scope: FCM_SCOPE,
+      aud: "https://oauth2.googleapis.com/token",
+      iat: now,
+      exp: getNumericDate(now + 3600), // Scade tra un'ora
+    };
+
+    const jwtToken = await createJwt(header, payload, private_key);
+
+    const authResponse = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion: jwtToken,
+      }),
+    });
+
+    if (!authResponse.ok) {
+      throw new Error(`Failed to get access token: ${authResponse.statusText}`);
+    }
+
+    const authData = await authResponse.json();
+    accessTokenCache = {
+      token: authData.access_token,
+      expires: Date.now() + (authData.expires_in - 300) * 1000, // Rinnova 5 minuti prima
+    };
+
+    return accessTokenCache.token;
+
+  } catch (err) {
+    console.error("Errore generazione token di accesso:", err);
+    throw err;
+  }
+};
+
 serve(async (req) => {
-  // Gestione CORS
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders, status: 200 });
   }
@@ -46,24 +108,44 @@ serve(async (req) => {
       });
     }
 
-    const vapidKeys = {
-      publicKey: Deno.env.get("VAPID_PUBLIC_KEY")!,
-      privateKey: Deno.env.get("VAPID_PRIVATE_KEY")!,
-    };
-
-    const payload = JSON.stringify({
-      title: "Nuova Notifica di Gruppo",
-      body: message,
-      url: "/", // URL da aprire quando si clicca la notifica
-    });
-
+    const accessToken = await getAccessToken();
+    const projectId = JSON.parse(Deno.env.get("FCM_SERVICE_ACCOUNT")!).project_id;
+    const fcmEndpoint = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`;
+    
     await Promise.all(
       userDevices.map(async (device) => {
         try {
-          const subscription = JSON.parse(device.push_token);
-          await webpush.sendNotification(subscription, payload, { vapidKeys });
+          const { fcmToken } = JSON.parse(device.push_token);
+          
+          const fcmPayload = {
+            message: {
+              token: fcmToken,
+              notification: {
+                title: "Nuova Notifica di Gruppo",
+                body: message,
+              },
+              data: {
+                url: "/",
+              },
+            },
+          };
+
+          const response = await fetch(fcmEndpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify(fcmPayload),
+          });
+          
+          if (!response.ok) {
+            console.error(`Errore API FCM: ${response.status} - ${await response.text()}`);
+          } else {
+            console.log("Notifica FCM inviata con successo!");
+          }
         } catch (pushError) {
-          console.error("Errore invio notifica:", pushError);
+          console.error("Errore invio notifica FCM:", pushError);
         }
       })
     );
